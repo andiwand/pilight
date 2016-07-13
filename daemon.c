@@ -65,6 +65,7 @@
 #include "libs/pilight/core/proc.h"
 #include "libs/pilight/core/ntp.h"
 #include "libs/pilight/core/config.h"
+#include "libs/pilight/core/time.h"
 
 #ifdef EVENTS
 	#include "libs/pilight/events/events.h"
@@ -482,7 +483,7 @@ void *broadcast(void *param) {
 	return (void *)NULL;
 }
 
-static void receive_queue(int *raw, int rawlen, int plslen, struct timespec &endts, struct hardware_t *hw) {
+static void receive_queue(int *raw, int rawlen, int plslen, struct timespec *endts, struct hardware_t *hw) {
 	logprintf(LOG_STACK, "%s(...)", __FUNCTION__);
 
 	int i = 0;
@@ -721,7 +722,8 @@ void *send_code(void *param) {
 					}
 					if(strcmp(protocol->id, "raw") == 0) {
 						int plslen = sendqueue->code[sendqueue->length-1]/PULSE_DIV;
-						receive_queue(sendqueue->code, sendqueue->length, plslen, time_get_monotonic(), NULL);
+						struct timespec ts = time_get_monotonic();
+						receive_queue(sendqueue->code, sendqueue->length, plslen, &ts, NULL);
 					}
 					if(hw->receiveOOK != NULL || hw->receivePulseTrain != NULL) {
 						hw->wait = 0;
@@ -740,7 +742,8 @@ void *send_code(void *param) {
 			} else {
 				if(strcmp(protocol->id, "raw") == 0) {
 					int plslen = sendqueue->code[sendqueue->length-1]/PULSE_DIV;
-					receive_queue(sendqueue->code, sendqueue->length, plslen, time_get_monotonic(), NULL);
+					struct timespec ts = time_get_monotonic();
+					receive_queue(sendqueue->code, sendqueue->length, plslen, &ts, NULL);
 				}
 			}
 			if(message != NULL) {
@@ -1492,7 +1495,8 @@ void *receivePulseTrain(void *param) {
 			hw->receivePulseTrain(&r);
 			plslen = r.pulses[r.length-1]/PULSE_DIV;
 			if(r.length > 0) {
-				receive_queue(r.pulses, r.length, plslen, time_get_monotonic(), hw);
+				struct timespec ts = time_get_monotonic();
+				receive_queue(r.pulses, r.length, plslen, &ts, hw);
 			} else if(r.length == -1) {
 				hw->init();
 				sleep(1);
@@ -1547,7 +1551,8 @@ void *receiveOOK(void *param) {
 					}
 					/* Let's do a little filtering here as well */
 					if(r.length >= hw->minrawlen && r.length <= hw->maxrawlen) {
-						receive_queue(r.pulses, r.length, plslen, time_get_monotonic(), hw);
+						ts = time_get_monotonic();
+						receive_queue(r.pulses, r.length, plslen, &ts, hw);
 					}
 					r.length = 0;
 				}

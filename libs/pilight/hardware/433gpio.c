@@ -37,7 +37,9 @@ static unsigned short gpio433HwDeinit(void);
 static int gpio433Send(int *code, int rawlen, int repeats);
 static int gpio433Receive(void);
 static unsigned short gpio433Settings(JsonNode *json);
-void gpio433Init(void);
+
+static unsigned long gpio433CalcLockDuration(int *code, int rawlen, unsigned long duration);
+static void gpio433LockSend(unsigned long duration, struct timespec* from);
 
 static void* gpio433SendHandler(void *arg);
 static int gpio433SendQueue(int *code, int rawlen, int repeats);
@@ -65,8 +67,8 @@ typedef struct gpio433_csmadata_t {
 	pthread_mutex_t send_lock;
 	pthread_cond_t send_signal;
 	pthread_condattr_t send_signal_attr;
-	struct sendqueue_t *sendqueue_head;
-	struct sendqueue_t *sendqueue_tail;
+	struct gpio433_sendqueue_t *sendqueue_head;
+	struct gpio433_sendqueue_t *sendqueue_tail;
 	pthread_mutex_t sendqueue_lock;
 	pthread_cond_t sendqueue_signal;
 	pthread_t sendthread;
@@ -85,6 +87,38 @@ static unsigned int gpio_433_collision_waitmaxunits;
 
 static struct timespec gpio_433_receive_last;
 static struct gpio433_csmadata_t* gpio_433_csmadata;
+
+static gpio433_sendqueue_t *gpio433SendqueuePopFront() {
+	if(gpio_433_csmadata->sendqueue_head == NULL) {
+		return NULL;
+	}
+	struct gpio433_sendqueue_t *tmp = gpio_433_csmadata->sendqueue_head;
+	gpio_433_csmadata->sendqueue_head = gpio_433_csmadata->sendqueue_head->next;
+	if(gpio_433_csmadata->sendqueue_head == NULL) {
+		gpio_433_csmadata->sendqueue_tail = NULL;
+	}
+	return tmp;
+}
+
+static void gpio433SendqueuePushFront(gpio433_sendqueue_t* entry) {
+	if(gpio_433_csmadata->sendqueue_head == NULL) {
+		entry->next = NULL;
+		gpio_433_csmadata->sendqueue_head = gpio_433_csmadata->sendqueue_tail = entry;
+		return;
+	}
+	entry->next = gpio_433_csmadata->sendqueue_head;
+	gpio_433_csmadata->sendqueue_head = entry;
+}
+
+static void gpio433SendqueuePushBack(gpio433_sendqueue_t* entry) {
+	entry->next = NULL;
+	if(gpio_433_csmadata->sendqueue_tail == NULL) {
+		gpio_433_csmadata->sendqueue_head = gpio_433_csmadata->sendqueue_tail = entry;
+		return;
+	}
+	gpio_433_csmadata->sendqueue_tail->next = entry;
+	gpio_433_csmadata->sendqueue_tail = entry;
+}
 
 static unsigned long gpio433CalcLockDuration(int *code, int rawlen, unsigned long duration) {
 	if(duration == 0) {
@@ -106,8 +140,8 @@ static void gpio433LockSend(unsigned long duration, struct timespec* from) {
 	}
 
 	time_add_us(&tmp, duration);
-	if(time_cmp(&tmp, &csmadata->send_lockedts) > 0) {
-		csmadata->send_lockedts = tmp;
+	if(time_cmp(&tmp, &gpio_433_csmadata->send_lockedts) > 0) {
+		gpio_433_csmadata->send_lockedts = tmp;
 	}
 }
 
@@ -142,9 +176,10 @@ static unsigned short gpio433HwInit(void) {
 				gpio433->sendOOK = &gpio433SendQueue;
 				gpio433->reportCode = &gpio433ReportCode;
 
-				gpio_433_csmadata = (struct csmadata_t*) malloc(sizeof(struct csmadata_t));
+				gpio_433_csmadata = (struct gpio433_csmadata_t*) malloc(sizeof(struct gpio433_csmadata_t));
 				if(gpio_433_csmadata == NULL) {
-					OUT_OF_MEMORY;
+					fprintf(stderr, "out of memory\n");
+					exit(EXIT_FAILURE);
 				}
 				gpio_433_csmadata->last_rawlen = 0;
 				gpio_433_csmadata->send_lockedts.tv_sec = 0;
@@ -156,7 +191,7 @@ static unsigned short gpio433HwInit(void) {
 				gpio_433_csmadata->sendqueue_head = gpio_433_csmadata->sendqueue_tail = NULL;
 				pthread_mutex_init(&gpio_433_csmadata->sendqueue_lock, NULL);
 				pthread_cond_init(&gpio_433_csmadata->sendqueue_signal, NULL);
-				gpio_433_csmadata->sendimpl = (gpio_433_mac == MACCSMA) ? &gpio433Send : &gpio433SendCSMACD;
+				gpio_433_csmadata->sendimpl = (gpio_433_mac == GPIO_433_MACCSMA) ? &gpio433Send : &gpio433SendCSMACD;
 				gpio_433_csmadata->sendthread_stop = false;
 
 				if(pthread_create(&gpio_433_csmadata->sendthread, NULL, gpio433SendHandler, NULL)) {
@@ -165,7 +200,7 @@ static unsigned short gpio433HwInit(void) {
 				}
 				break;
 			default:
-				logprintf(LOG_ERR, "invalid mac: %d", mac);
+				logprintf(LOG_ERR, "invalid mac: %d", gpio_433_mac);
 				return EXIT_FAILURE;
 			}
 		}
@@ -177,7 +212,7 @@ static unsigned short gpio433HwInit(void) {
 }
 
 static unsigned short gpio433HwDeinit(void) {
-	switch(mac) {
+	switch(gpio_433_mac) {
 	case GPIO_433_MACCSMACD:
 		/* no break */
 	case GPIO_433_MACCSMA:
@@ -192,7 +227,7 @@ static unsigned short gpio433HwDeinit(void) {
 		pthread_join(gpio_433_csmadata->sendthread, NULL);
 
 		while (gpio_433_csmadata->sendqueue_head != NULL) {
-			struct sendqueue_t *entry = sendqueue_pop_front();
+			struct sendqueue_t *entry = gpio433SendqueuePopFront();
 			free(entry);
 		}
 		free(gpio_433_csmadata);
@@ -200,7 +235,7 @@ static unsigned short gpio433HwDeinit(void) {
 	case GPIO_433_MACNONE:
 		break;
 	default:
-		logprintf(LOG_ERR, "invalid mac: %d", mac);
+		logprintf(LOG_ERR, "invalid mac: %d", gpio_433_mac);
 		return EXIT_FAILURE;
 	}
 
@@ -237,11 +272,11 @@ static int gpio433Receive(void) {
 }
 
 static void *gpio433SendHandler(void* arg) {
-	struct sendqueue_t *entry = NULL;
+	struct gpio433_sendqueue_t *entry = NULL;
 
 	while(1) {
 		pthread_mutex_lock(&gpio_433_csmadata->sendqueue_lock);
-		entry = sendqueue_pop_front();
+		entry = gpio433SendqueuePopFront();
 		if(entry == NULL) {
 			pthread_cond_wait(&gpio_433_csmadata->sendqueue_signal, &gpio_433_csmadata->sendqueue_lock);
 			if(gpio_433_csmadata->sendthread_stop) {
@@ -272,11 +307,11 @@ static void *gpio433SendHandler(void* arg) {
 		pthread_mutex_unlock(&gpio_433_csmadata->send_lock);
 
 		if(result == EXIT_FAILURE) {
-			logprintf(LOG_DEBUG, "send failed (retry %d/%d)", entry->retry, max_retries);
+			logprintf(LOG_DEBUG, "send failed (retry %d/%d)", entry->retry, gpio_433_max_retries);
 			entry->retry++;
-			if(entry->retry < max_retries) {
+			if(entry->retry < gpio_433_max_retries) {
 				pthread_mutex_lock(&gpio_433_csmadata->sendqueue_lock);
-				sendqueue_push_front(entry);
+				gpio433SendqueuePushFront(entry);
 				pthread_mutex_unlock(&gpio_433_csmadata->sendqueue_lock);
 			} else {
 				logprintf(LOG_DEBUG, "skip code");
@@ -299,19 +334,21 @@ exit:
 static int gpio433SendQueue(int *code, int rawlen, int repeats) {
 	pthread_mutex_lock(&gpio_433_csmadata->sendqueue_lock);
 	bool notify = gpio_433_csmadata->sendqueue_head == NULL;
-	struct sendqueue_t *entry = (struct sendqueue_t*) malloc(sizeof(struct sendqueue_t));
+	struct gpio433_sendqueue_t *entry = (struct gpio433_sendqueue_t*) malloc(sizeof(struct gpio433_sendqueue_t));
 	if(entry == NULL) {
-		OUT_OF_MEMORY;
+		fprintf(stderr, "out of memory\n");
+		exit(EXIT_FAILURE);
 	}
 	entry->code = (int *) malloc(sizeof(int)*rawlen);
 	if(entry->code == NULL) {
-		OUT_OF_MEMORY;
+		fprintf(stderr, "out of memory\n");
+		exit(EXIT_FAILURE);
 	}
 	memcpy(entry->code, code, sizeof(int)*rawlen);
 	entry->rawlen = rawlen;
 	entry->repeats = repeats;
 	entry->retry = 0;
-	sendqueue_push_back(entry);
+	gpio433SendqueuePushBack(entry);
 	if(notify) {
 		pthread_cond_signal(&gpio_433_csmadata->sendqueue_signal);
 	}
@@ -376,7 +413,7 @@ collision:
 }
 
 static void gpio433ReportRawCode(int *code, int rawlen, unsigned long duration, struct timespec* endts) {
-	duration = gpio433LockSend(code, rawlen, duration);
+	duration = gpio433CalcLockDuration(code, rawlen, duration);
 	pthread_mutex_lock(&gpio_433_csmadata->send_lock);
 	if (gpio_433_csmadata->last_rawlen > 0 && rawlen == gpio_433_csmadata->last_rawlen) {
 		unsigned long lock_duration = duration * gpio_433_wait_n_frames;
@@ -388,7 +425,7 @@ static void gpio433ReportRawCode(int *code, int rawlen, unsigned long duration, 
 }
 
 static void gpio433ReportCode(int *code, int rawlen, unsigned long duration, struct timespec* endts) {
-	duration = gpio433LockSend(code, rawlen, duration);
+	duration = gpio433CalcLockDuration(code, rawlen, duration);
 	pthread_mutex_lock(&gpio_433_csmadata->send_lock);
 	unsigned long lock_duration = duration * gpio_433_wait_n_frames;
 	gpio433LockSend(lock_duration, endts);
@@ -474,7 +511,7 @@ void gpio433Init(void) {
 	gpio433->mingaplen = 5100;
 	gpio433->maxgaplen = 10000;
 
-	gpio_433_mac = MACNONE;
+	gpio_433_mac = GPIO_433_MACNONE;
 	gpio_433_max_retries = 5;
 	gpio_433_wait_n_frames = 5;
 	gpio_433_collision_waitmin = 200000;

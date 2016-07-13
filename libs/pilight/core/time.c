@@ -4,7 +4,7 @@
 struct timespec time_get_monotonic() {
   struct timespec result;
   clock_gettime(CLOCK_MONOTONIC, &result);
-  return result
+  return result;
 }
 
 unsigned long time_long_ns(struct timespec *ts) {

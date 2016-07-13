@@ -4,6 +4,7 @@
 
 #include <time.h>
 
+struct timespec time_get_monotonic();
 unsigned long time_long_ns(struct timespec *ts);
 unsigned long time_long_us(struct timespec *ts);
 void time_add_ns(struct timespec *ts, unsigned long nanos);
