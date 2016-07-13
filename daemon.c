@@ -71,7 +71,7 @@
 #endif
 
 #ifdef WEBSERVER
-	#ifdef WEBSERVER_HTTPS	
+	#ifdef WEBSERVER_HTTPS
 		#include "libs/polarssl/polarssl/md5.h"
 	#endif
 	#include "libs/pilight/core/webserver.h"
@@ -124,8 +124,10 @@ static struct sendqueue_t *sendqueue_head;
 typedef struct recvqueue_t {
 	int raw[MAXPULSESTREAMLENGTH];
 	int rawlen;
-	int hwtype;
 	int plslen;
+	struct hardware_t *hw;
+	unsigned long duration;
+	struct timespec *endts;
 	struct recvqueue_t *next;
 } recvqueue_t;
 
@@ -480,7 +482,7 @@ void *broadcast(void *param) {
 	return (void *)NULL;
 }
 
-static void receive_queue(int *raw, int rawlen, int plslen, int hwtype) {
+static void receive_queue(int *raw, int rawlen, int plslen, struct timespec &endts, struct hardware_t *hw) {
 	logprintf(LOG_STACK, "%s(...)", __FUNCTION__);
 
 	int i = 0;
@@ -493,12 +495,15 @@ static void receive_queue(int *raw, int rawlen, int plslen, int hwtype) {
 				fprintf(stderr, "out of memory\n");
 				exit(EXIT_FAILURE);
 			}
+			rnode->duration = 0;
 			for(i=0;i<rawlen;i++) {
 				rnode->raw[i] = raw[i];
+				rnode->duration += raw[i];
 			}
 			rnode->rawlen = rawlen;
 			rnode->plslen = plslen;
-			rnode->hwtype = hwtype;
+			rnode->hw = hw;
+			rnode->endts = endts;
 
 			if(recvqueue_number == 0) {
 				recvqueue = rnode;
@@ -558,7 +563,7 @@ static void receive_parse_api(struct JsonNode *code, int hwtype) {
 		if(protocol->hwtype == hwtype && protocol->parseCommand != NULL) {
 			protocol->parseCommand(code);
 			receiver_create_message(protocol);
-		}		
+		}
 		pnode = pnode->next;
 	}
 }
@@ -579,7 +584,7 @@ void *receive_parse_code(void *param) {
 			while(pnode != NULL && main_loop) {
 				protocol = pnode->listener;
 
-				if((protocol->hwtype == recvqueue->hwtype || protocol->hwtype == -1 || recvqueue->hwtype == -1) &&
+				if((recvqueue->hw == NULL || protocol->hwtype == recvqueue->hw->hwtype || protocol->hwtype == -1) &&
 				   (protocol->parseCode != NULL && protocol->validate != NULL)) {
 
 					if(recvqueue->rawlen < MAXPULSESTREAMLENGTH) {
@@ -588,6 +593,9 @@ void *receive_parse_code(void *param) {
 					protocol->rawlen = recvqueue->rawlen;
 
 					if(protocol->validate() == 0) {
+						if(recvqueue->hw->reportCode != NULL) {
+							recvqueue->hw->reportCode(recvqueue->raw, recvqueue->rawlen, recvqueue->duration, recvqueue->endts);
+						}
 						logprintf(LOG_DEBUG, "possible %s protocol", protocol->id);
 						gettimeofday(&tv, NULL);
 						if(protocol->first > 0) {
@@ -713,7 +721,7 @@ void *send_code(void *param) {
 					}
 					if(strcmp(protocol->id, "raw") == 0) {
 						int plslen = sendqueue->code[sendqueue->length-1]/PULSE_DIV;
-						receive_queue(sendqueue->code, sendqueue->length, plslen, -1);
+						receive_queue(sendqueue->code, sendqueue->length, plslen, time_get_monotonic(), NULL);
 					}
 					if(hw->receiveOOK != NULL || hw->receivePulseTrain != NULL) {
 						hw->wait = 0;
@@ -721,7 +729,7 @@ void *send_code(void *param) {
 						pthread_cond_signal(&hw->signal);
 					}
 				} else if(hw->comtype == COMAPI && hw->sendAPI != NULL) {
-					if(message != NULL) {				
+					if(message != NULL) {
 						if(hw->sendAPI(message) == 0) {
 							logprintf(LOG_DEBUG, "successfully send %s command", protocol->id);
 						} else {
@@ -732,7 +740,7 @@ void *send_code(void *param) {
 			} else {
 				if(strcmp(protocol->id, "raw") == 0) {
 					int plslen = sendqueue->code[sendqueue->length-1]/PULSE_DIV;
-					receive_queue(sendqueue->code, sendqueue->length, plslen, -1);
+					receive_queue(sendqueue->code, sendqueue->length, plslen, time_get_monotonic(), NULL);
 				}
 			}
 			if(message != NULL) {
@@ -1484,7 +1492,7 @@ void *receivePulseTrain(void *param) {
 			hw->receivePulseTrain(&r);
 			plslen = r.pulses[r.length-1]/PULSE_DIV;
 			if(r.length > 0) {
-				receive_queue(r.pulses, r.length, plslen, hw->hwtype);
+				receive_queue(r.pulses, r.length, plslen, time_get_monotonic(), hw);
 			} else if(r.length == -1) {
 				hw->init();
 				sleep(1);
@@ -1539,7 +1547,7 @@ void *receiveOOK(void *param) {
 					}
 					/* Let's do a little filtering here as well */
 					if(r.length >= hw->minrawlen && r.length <= hw->maxrawlen) {
-						receive_queue(r.pulses, r.length, plslen, hw->hwtype);
+						receive_queue(r.pulses, r.length, plslen, time_get_monotonic(), hw);
 					}
 					r.length = 0;
 				}
@@ -2321,8 +2329,8 @@ int start_pilight(int argc, char **argv) {
 		}
 		strcpy(pemfile, PEM_FILE);
 		pem_free = 1;
-	}	
-	
+	}
+
 	char *content = NULL;
 	unsigned char md5sum[17];
 	char md5conv[33];
@@ -2351,7 +2359,7 @@ int start_pilight(int argc, char **argv) {
 
 	if(pem_free == 1) {
 		FREE(pemfile);
-	}	
+	}
 	#endif
 
 	settings_find_number("webserver-enable", &webserver_enable);
