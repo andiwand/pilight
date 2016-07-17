@@ -52,12 +52,12 @@ static int checkArguments(struct rules_actions_t *obj) {
 	struct JsonNode *jbvalues = NULL;
 	struct JsonNode *jcvalues = NULL;
 	struct JsonNode *jdvalues = NULL;
-	struct JsonNode *jfvalues = NULL;
+	struct JsonNode *jevalues = NULL;
 	struct JsonNode *jachild = NULL;
 	struct JsonNode *jbchild = NULL;
 	struct JsonNode *jcchild = NULL;
 	struct JsonNode *jdchild = NULL;
-	struct JsonNode *jfchild = NULL;
+	struct JsonNode *jechild = NULL;
 	char *state = NULL, **array = NULL;
 	double nr1 = 0.0, nr2 = 0.0, nr3 = 0.0, nr4 = 0.0, nr5;
 	int nrvalues = 0, l = 0, i = 0, match = 0;
@@ -261,22 +261,22 @@ static int checkArguments(struct rules_actions_t *obj) {
 	}
 
 	if(jforce != NULL) {
-		if((jfvalues = json_find_member(jforce, "value")) != NULL) {
-			jfchild = json_first_child(jfvalues);
-			while(jfchild) {
-				if(jfchild->tag == JSON_STRING) {
-					if(strcmp(jfchild->string_, "on") == 0) {
+		if((jevalues = json_find_member(jforce, "value")) != NULL) {
+			jechild = json_first_child(jevalues);
+			while(jechild) {
+				if(jechild->tag == JSON_STRING) {
+					if(strcmp(jechild->string_, "on") == 0) {
 						// no error
-					} else if(strcmp(jfchild->string_, "off") == 0) {
+					} else if(strcmp(jechild->string_, "off") == 0) {
 						// no error
 					} else {
-						logprintf(LOG_ERR, "force can't be set to \"%s\"", jfchild->string_);
+						logprintf(LOG_ERR, "force can't be set to \"%s\"", jechild->string_);
 						return -1;
 					}
 				} else {
 					return -1;
 				}
-				jfchild = jfchild->next;
+				jechild = jechild->next;
 			}
 		} else {
 			return -1;
@@ -301,7 +301,7 @@ static void *thread(void *param) {
 	struct JsonNode *javalues = NULL;
 	struct JsonNode *jcvalues = NULL;
 	struct JsonNode *jdvalues = NULL;
-	struct JsonNode *jfvalues = NULL;
+	struct JsonNode *jevalues = NULL;
 	struct JsonNode *jstate = NULL;
 	struct JsonNode *jaseconds = NULL;
 	struct JsonNode *jfforce = NULL;
@@ -309,7 +309,7 @@ static void *thread(void *param) {
 	int seconds_after = 0, type_after = 0;
 	int	l = 0, i = 0, nrunits = (sizeof(units)/sizeof(units[0]));
 	int seconds_for = 0, type_for = 0, timer = 0;
-	bool force = false;
+	int force_update = 0;
 
 	event_action_started(pth);
 
@@ -359,10 +359,11 @@ static void *thread(void *param) {
 		}
 	}
 
+	settings_find_number("devices-force-state-update", &force_update);
 	if((jforce = json_find_member(json, "FORCE")) != NULL) {
-		if((jfvalues = json_find_member(jforce, "value")) != NULL) {
-			jfforce = json_first_child(jfvalues);
-			force = strcmp(jfforce->string_, "on") == 0;
+		if((jevalues = json_find_member(jforce, "value")) != NULL) {
+			jfforce = json_first_child(jevalues);
+			force_update = strcmp(jfforce->string_, "on") == 0;
 		}
 	}
 
@@ -435,7 +436,7 @@ static void *thread(void *param) {
 						 * We're not switching when current state is the same as
 						 * the old state. (except force)
 						 */
-						if(force || old_state == NULL || strcmp(old_state, new_state) != 0) {
+						if(force_update || old_state == NULL || strcmp(old_state, new_state) != 0) {
 							if(pilight.control != NULL) {
 								pilight.control(pth->device, new_state, NULL, ACTION);
 							}
@@ -454,9 +455,9 @@ static void *thread(void *param) {
 	}
 
 	/*
-	 * We only need to restore the state if it was actually changed
+	 * We only need to restore the state if it was actually changed (except force)
 	 */
-	if(seconds_for > 0 && old_state != NULL && new_state != NULL && (force || strcmp(old_state, new_state) != 0)) {
+	if(seconds_for > 0 && old_state != NULL && new_state != NULL && (force_update || strcmp(old_state, new_state) != 0)) {
 		timer = 0;
 		while(pth->loop == 1) {
 			if(seconds_for == timer) {
@@ -521,7 +522,7 @@ void actionSwitchInit(void) {
 	options_add(&action_switch->options, 'b', "TO", OPTION_HAS_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 	options_add(&action_switch->options, 'c', "AFTER", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 	options_add(&action_switch->options, 'd', "FOR", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
-	options_add(&action_switch->options, 'f', "FORCE", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
+	options_add(&action_switch->options, 'e', "FORCE", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 
 	action_switch->run = &run;
 	action_switch->checkArguments = &checkArguments;

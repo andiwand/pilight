@@ -241,7 +241,7 @@ static int settings_parse(JsonNode *root) {
 				settings_add_number(jsettings->key, (int)jsettings->number_);
 			}
 		} else if(strcmp(jsettings->key, "log-file") == 0
-#ifndef _WIN32		
+#ifndef _WIN32
 			|| strcmp(jsettings->key, "pid-file") == 0
 #endif
 			|| strcmp(jsettings->key, "pem-file") == 0) {
@@ -515,6 +515,18 @@ static int settings_parse(JsonNode *root) {
 				settings_add_number(jsettings->key, (int)jsettings->number_);
 			}
 #endif //EVENTS
+		} else if(strcmp(jsettings->key, "devices-force-state-update") == 0) {
+			if(jsettings->tag != JSON_NUMBER) {
+				logprintf(LOG_ERR, "config setting \"%s\" must 0 or 1", jsettings->key);
+				have_error = 1;
+				goto clear;
+			} else if((int)jsettings->number_ != 0 && (int)jsettings->number_ != 1) {
+				logprintf(LOG_ERR, "config setting \"%s\" must 0 or 1", jsettings->key);
+				have_error = 1;
+				goto clear;
+			} else {
+				settings_add_number(jsettings->key, (int)jsettings->number_);
+			}
 		} else {
 			logprintf(LOG_ERR, "config setting \"%s\" is invalid", jsettings->key);
 			have_error = 1;
