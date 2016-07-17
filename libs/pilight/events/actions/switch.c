@@ -47,16 +47,19 @@ static int checkArguments(struct rules_actions_t *obj) {
 	struct JsonNode *jto = NULL;
 	struct JsonNode *jfor = NULL;
 	struct JsonNode *jafter = NULL;
+	struct JsonNode *jforce = NULL;
 	struct JsonNode *javalues = NULL;
 	struct JsonNode *jbvalues = NULL;
 	struct JsonNode *jcvalues = NULL;
 	struct JsonNode *jdvalues = NULL;
+	struct JsonNode *jfvalues = NULL;
 	struct JsonNode *jachild = NULL;
 	struct JsonNode *jbchild = NULL;
 	struct JsonNode *jcchild = NULL;
 	struct JsonNode *jdchild = NULL;
+	struct JsonNode *jfchild = NULL;
 	char *state = NULL, **array = NULL;
-	double nr1 = 0.0, nr2 = 0.0, nr3 = 0.0, nr4 = 0.0;
+	double nr1 = 0.0, nr2 = 0.0, nr3 = 0.0, nr4 = 0.0, nr5;
 	int nrvalues = 0, l = 0, i = 0, match = 0;
 	int	nrunits = (sizeof(units)/sizeof(units[0]));
 
@@ -64,6 +67,8 @@ static int checkArguments(struct rules_actions_t *obj) {
 	jto = json_find_member(obj->parsedargs, "TO");
 	jfor = json_find_member(obj->parsedargs, "FOR");
 	jafter = json_find_member(obj->parsedargs, "AFTER");
+	jforce = json_find_member(obj->parsedargs, "FORCE");
+	logprintf(LOG_DEBUG, "json %s", json_encode(obj->parsedargs));
 
 	if(jdevice == NULL) {
 		logprintf(LOG_ERR, "switch action is missing a \"DEVICE\" statement");
@@ -90,6 +95,14 @@ static int checkArguments(struct rules_actions_t *obj) {
 		json_find_number(jafter, "order", &nr4);
 		if(nr4 < nr2) {
 			logprintf(LOG_ERR, "switch actions are formatted as \"switch DEVICE ... TO ... AFTER ...\"");
+			return -1;
+		}
+	}
+
+	if(jforce != NULL) {
+		json_find_number(jforce, "order", &nr5);
+		if(nr5 < nr2) {
+			logprintf(LOG_ERR, "switch actions are formatted as \"switch DEVICE ... TO ... FORCE ...\"");
 			return -1;
 		}
 	}
@@ -246,6 +259,35 @@ static int checkArguments(struct rules_actions_t *obj) {
 			jbchild = jbchild->next;
 		}
 	}
+
+	if(jforce != NULL) {
+		if((jfvalues = json_find_member(jforce, "value")) != NULL) {
+			jfchild = json_first_child(jfvalues);
+			while(jfchild) {
+				if(jfchild->tag == JSON_STRING) {
+					if(strcmp(jfchild->string_, "on") == 0) {
+						// no error
+					} else if(strcmp(jfchild->string_, "off") == 0) {
+						// no error
+					} else {
+						logprintf(LOG_ERR, "force can't be set to \"%s\"", jfchild->string_);
+						return -1;
+					}
+				} else {
+					return -1;
+				}
+				jfchild = jfchild->next;
+			}
+		} else {
+			return -1;
+		}
+
+		if(nr5 < nr2) {
+			logprintf(LOG_ERR, "switch actions are formatted as \"switch DEVICE ... TO ... AFTER ...\"");
+			return -1;
+		}
+	}
+
 	return 0;
 }
 
@@ -255,15 +297,19 @@ static void *thread(void *param) {
 	struct JsonNode *jto = NULL;
 	struct JsonNode *jafter = NULL;
 	struct JsonNode *jfor = NULL;
+	struct JsonNode *jforce = NULL;
 	struct JsonNode *javalues = NULL;
 	struct JsonNode *jcvalues = NULL;
 	struct JsonNode *jdvalues = NULL;
+	struct JsonNode *jfvalues = NULL;
 	struct JsonNode *jstate = NULL;
 	struct JsonNode *jaseconds = NULL;
+	struct JsonNode *jfforce = NULL;
 	char *new_state = NULL, *old_state = NULL, *state = NULL, **array = NULL;
 	int seconds_after = 0, type_after = 0;
 	int	l = 0, i = 0, nrunits = (sizeof(units)/sizeof(units[0]));
 	int seconds_for = 0, type_for = 0, timer = 0;
+	bool force = false;
 
 	event_action_started(pth);
 
@@ -310,6 +356,13 @@ static void *thread(void *param) {
 					}
 				}
 			}
+		}
+	}
+
+	if((jforce = json_find_member(json, "FORCE")) != NULL) {
+		if((jfvalues = json_find_member(jforce, "value")) != NULL) {
+			jfforce = json_first_child(jfvalues);
+			force = strcmp(jfforce->string_, "on") == 0;
 		}
 	}
 
@@ -380,9 +433,9 @@ static void *thread(void *param) {
 						strcpy(new_state, state);
 						/*
 						 * We're not switching when current state is the same as
-						 * the old state.
+						 * the old state. (except force)
 						 */
-						if(old_state == NULL || strcmp(old_state, new_state) != 0) {
+						if(force || old_state == NULL || strcmp(old_state, new_state) != 0) {
 							if(pilight.control != NULL) {
 								pilight.control(pth->device, new_state, NULL, ACTION);
 							}
@@ -403,7 +456,7 @@ static void *thread(void *param) {
 	/*
 	 * We only need to restore the state if it was actually changed
 	 */
-	if(seconds_for > 0 && old_state != NULL && new_state != NULL && strcmp(old_state, new_state) != 0) {
+	if(seconds_for > 0 && old_state != NULL && new_state != NULL && (force || strcmp(old_state, new_state) != 0)) {
 		timer = 0;
 		while(pth->loop == 1) {
 			if(seconds_for == timer) {
@@ -468,6 +521,7 @@ void actionSwitchInit(void) {
 	options_add(&action_switch->options, 'b', "TO", OPTION_HAS_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 	options_add(&action_switch->options, 'c', "AFTER", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 	options_add(&action_switch->options, 'd', "FOR", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
+	options_add(&action_switch->options, 'f', "FORCE", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 
 	action_switch->run = &run;
 	action_switch->checkArguments = &checkArguments;
