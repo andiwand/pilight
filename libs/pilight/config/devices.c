@@ -38,6 +38,8 @@
 #include "../core/firmware.h"
 #include "../core/datetime.h"
 
+#include "../config/settings.h"
+
 #include "../protocols/protocol.h"
 
 #include "defines.h"
@@ -124,6 +126,9 @@ int devices_update(char *protoname, JsonNode *json, enum origin_t origin, JsonNo
 	json_append_member(rval, "timestamp", json_mknumber((double)utct, 0));
 
 	json_find_string(json, "uuid", &uuid);
+
+	int force_update = 0;
+	settings_find_number("devices-force-state-update", &force_update);
 
 	if((opt = protocol->options)) {
 		/* Loop through all devices */
@@ -358,7 +363,7 @@ int devices_update(char *protoname, JsonNode *json, enum origin_t origin, JsonNo
 							if(strcmp(sptr->name, "state") == 0) {
 								if((stateType == JSON_STRING &&
 									sptr->values->type == JSON_STRING &&
-									strcmp(sptr->values->string_, sstring_) != 0)) {
+									(force_update || strcmp(sptr->values->string_, sstring_) != 0))) {
 									if((sptr->values->string_ = REALLOC(sptr->values->string_, strlen(sstring_)+1)) == NULL) {
 										fprintf(stderr, "out of memory\n");
 										exit(EXIT_FAILURE);
@@ -369,7 +374,7 @@ int devices_update(char *protoname, JsonNode *json, enum origin_t origin, JsonNo
 									update = 1;
 								} else if((stateType == JSON_NUMBER &&
 										   sptr->values->type == JSON_NUMBER &&
-										   fabs(sptr->values->number_-snumber_) < EPSILON)) {
+										   (force_update || fabs(sptr->values->number_-snumber_) < EPSILON))) {
 									sptr->values->number_ = snumber_;
 									sptr->values->decimals = sdecimals_;
 									sptr->values->type = JSON_NUMBER;
@@ -407,7 +412,7 @@ int devices_update(char *protoname, JsonNode *json, enum origin_t origin, JsonNo
 										 * In case of Z-Wave, the ACTION is always followed by a RECEIVER origin due to
 										 * its feedback feature. We do not want to abort or action in these cases.
 										 */
-										if(!((dptr->protocols->listener->hwtype == ZWAVE) && dptr->lastorigin == RECEIVER && dptr->prevorigin == ACTION) || 
+										if(!((dptr->protocols->listener->hwtype == ZWAVE) && dptr->lastorigin == RECEIVER && dptr->prevorigin == ACTION) ||
 										   dptr->protocols->listener->hwtype != ZWAVE) {
 											event_action_thread_stop(dptr);
 										}

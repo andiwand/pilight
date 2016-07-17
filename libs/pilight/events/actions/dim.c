@@ -52,20 +52,23 @@ static int checkArguments(struct rules_actions_t *obj) {
 	struct JsonNode *jafter = NULL;
 	struct JsonNode *jfrom = NULL;
 	struct JsonNode *jin = NULL;
+	struct JsonNode *jforce = NULL;
 	struct JsonNode *javalues = NULL;
 	struct JsonNode *jbvalues = NULL;
 	struct JsonNode *jcvalues = NULL;
 	struct JsonNode *jdvalues = NULL;
 	struct JsonNode *jevalues = NULL;
 	struct JsonNode *jfvalues = NULL;
+	struct JsonNode *jgvalues = NULL;
 	struct JsonNode *jachild = NULL;
 	struct JsonNode *jbchild = NULL;
 	struct JsonNode *jcchild = NULL;
 	struct JsonNode *jdchild = NULL;
 	struct JsonNode *jechild = NULL;
 	struct JsonNode *jfchild = NULL;
+	struct JsonNode *jgchild = NULL;
 	char **array = NULL;
-	double nr1 = 0.0, nr2 = 0.0, nr3 = 0.0, nr4 = 0.0, nr5 = 0.0, nr6 = 0.0;
+	double nr1 = 0.0, nr2 = 0.0, nr3 = 0.0, nr4 = 0.0, nr5 = 0.0, nr6 = 0.0, nr7 = 0.0;
 	double dimfrom = 0.0, dimto = 0.0;
 	int nrvalues = 0, l = 0, i = 0, match = 0;
 	int	nrunits = (sizeof(units)/sizeof(units[0]));
@@ -76,6 +79,7 @@ static int checkArguments(struct rules_actions_t *obj) {
 	jin = json_find_member(obj->parsedargs, "IN");
 	jafter = json_find_member(obj->parsedargs, "AFTER");
 	jfrom = json_find_member(obj->parsedargs, "FROM");
+	jforce = json_find_member(obj->parsedargs, "FORCE");
 
 	if(jdevice == NULL) {
 		logprintf(LOG_ERR, "dim action is missing a \"DEVICE ...\" statement");
@@ -131,6 +135,14 @@ static int checkArguments(struct rules_actions_t *obj) {
 	} else if(jin != NULL) {
 		logprintf(LOG_ERR, "dim actions are formatted as \"dim DEVICE ... TO ... FROM ... IN ...\"");
 		return -1;
+	}
+
+	if(jforce != NULL) {
+		json_find_number(jforce, "order", &nr7);
+		if(nr7 < nr2) {
+			logprintf(LOG_ERR, "switch actions are formatted as \"switch DEVICE ... TO ... FORCE ...\"");
+			return -1;
+		}
 	}
 
 	if((javalues = json_find_member(jto, "value")) != NULL) {
@@ -292,6 +304,29 @@ static int checkArguments(struct rules_actions_t *obj) {
 		}
 	}
 
+	if(jforce != NULL) {
+		if((jgvalues = json_find_member(jforce, "value")) != NULL) {
+			jgchild = json_first_child(jgvalues);
+			while(jgchild) {
+				if(jgchild->tag == JSON_STRING) {
+					if(strcmp(jgchild->string_, "on") == 0) {
+						// no error
+					} else if(strcmp(jgchild->string_, "off") == 0) {
+						// no error
+					} else {
+						logprintf(LOG_ERR, "force can't be set to \"%s\"", jgchild->string_);
+						return -1;
+					}
+				} else {
+					return -1;
+				}
+				jgchild = jgchild->next;
+			}
+		} else {
+			return -1;
+		}
+	}
+
 	if((jbvalues = json_find_member(jdevice, "value")) != NULL) {
 		jbchild = json_first_child(jbvalues);
 		while(jbchild) {
@@ -440,6 +475,7 @@ static int checkArguments(struct rules_actions_t *obj) {
 		logprintf(LOG_ERR, "internal error 5 in dim action", jbchild->string_);
 		return -1;
 	}
+
 	return 0;
 }
 
@@ -453,13 +489,16 @@ static void *thread(void *param) {
 	struct JsonNode *jfor = NULL;
 	struct JsonNode *jfrom = NULL;
 	struct JsonNode *jin = NULL;
+	struct JsonNode *jforce = NULL;
 	struct JsonNode *javalues = NULL;
 	struct JsonNode *jcvalues = NULL;
 	struct JsonNode *jdvalues = NULL;
 	struct JsonNode *jevalues = NULL;
 	struct JsonNode *jfvalues = NULL;
+	struct JsonNode *jgvalues = NULL;
 	struct JsonNode *jaseconds = NULL;
 	struct JsonNode *jiseconds = NULL;
+	struct JsonNode *jgforce = NULL;
 	struct JsonNode *jvalues = NULL;
 	char *old_state = NULL, **array = NULL;
 	double dimlevel = 0.0, old_dimlevel = 0.0, new_dimlevel = 0.0, cur_dimlevel = 0.0;
@@ -468,6 +507,7 @@ static void *thread(void *param) {
 	int direction = 0, interval = 0, timer = 0;
 	int	l = 0, i = 0, nrunits = (sizeof(units)/sizeof(units[0]));
 	char state[3];
+	int force_update = 0;
 
 	event_action_started(pth);
 
@@ -538,6 +578,14 @@ static void *thread(void *param) {
 					}
 				}
 			}
+		}
+	}
+
+	settings_find_number("devices-force-state-update", &force_update);
+	if((jforce = json_find_member(json, "FORCE")) != NULL) {
+		if((jgvalues = json_find_member(jforce, "value")) != NULL) {
+			jgforce = json_first_child(jgvalues);
+			force_update = strcmp(jgforce->string_, "on") == 0;
 		}
 	}
 
@@ -664,10 +712,10 @@ static void *thread(void *param) {
 
 	/*
 	 * We'll switch from first dimlevel to second dimlevel after X seconds
-	 * and switch back after X seconds.
+	 * and switch back after X seconds. (except force)
 	 */
 	if(has_in == 0) {
-		if(old_state == NULL || ((strcmp(old_state, "on") != 0 || (int)cur_dimlevel != (int)new_dimlevel))) {
+		if(old_state == NULL || ((force_update || strcmp(old_state, "on") != 0 || (int)cur_dimlevel != (int)new_dimlevel))) {
 			timer = 0;
 			while(pth->loop == 1) {
 				if(timer == seconds_after) {
@@ -688,9 +736,9 @@ static void *thread(void *param) {
 			}
 
 			/*
-			 * We only need to restore the state if it was actually changed
+			 * We only need to restore the state if it was actually changed (except force)
 			 */
-			if(seconds_for > 0 && old_state != NULL && (strcmp(old_state, "on") != 0 || (int)cur_dimlevel != (int)new_dimlevel)) {
+			if(seconds_for > 0 && old_state != NULL && (force_update || strcmp(old_state, "on") != 0 || (int)cur_dimlevel != (int)new_dimlevel)) {
 				timer = 0;
 				while(pth->loop == 1) {
 					if(seconds_for == timer) {
@@ -774,10 +822,10 @@ static void *thread(void *param) {
 			}
 		}
 		/*
-		 * We only need to restore the state if it was actually changed
+		 * We only need to restore the state if it was actually changed (except force)
 		 */
 		if(seconds_for > 0 && old_state != NULL &&
-			 (strcmp(old_state, "on") != 0 || (int)cur_dimlevel != (int)new_dimlevel)) {
+			 (force_update || strcmp(old_state, "on") != 0 || (int)cur_dimlevel != (int)new_dimlevel)) {
 			timer = 0;
 			while(pth->loop == 1) {
 				if(timer == seconds_for) {
@@ -849,6 +897,7 @@ void actionDimInit(void) {
 	options_add(&action_dim->options, 'd', "FOR", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 	options_add(&action_dim->options, 'e', "AFTER", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 	options_add(&action_dim->options, 'f', "IN", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
+	options_add(&action_dim->options, 'g', "FORCE", OPTION_OPT_VALUE, DEVICES_VALUE, JSON_STRING, NULL, NULL);
 
 	action_dim->run = &run;
 	action_dim->checkArguments = &checkArguments;
